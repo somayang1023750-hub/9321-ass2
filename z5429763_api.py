@@ -1,5 +1,3 @@
-"""COMP9321 aviation API. Run with Python 3.13 from this directory."""
-
 import csv
 import io
 import json
@@ -64,7 +62,9 @@ account_model = api.model(
 account_create = api.model(
     "CreateAccount",
     {
-        "username": fields.String(required=True, description="Unique, 1–80 characters"),
+        "username": fields.String(
+            required=True, description="Unique, 1–80 characters; no colons or control characters"
+        ),
         "password": fields.String(required=True, description="1–256 characters"),
     },
 )
@@ -264,6 +264,10 @@ def body(allowed, required=()):
 def text(value, label, limit=256):
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         fail(400, f"{label} must be nonempty text of at most {limit} characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        fail(400, f"{label} must contain valid Unicode text")
     return value.strip()
 
 
@@ -295,6 +299,8 @@ class Accounts(Resource):
         """Create a User account."""
         data = body(("username", "password"), ("username", "password"))
         username = text(data["username"], "username", 80)
+        if ":" in username or any(ord(char) < 32 or ord(char) == 127 for char in data["username"]):
+            fail(400, "username must not contain colons or control characters")
         text(data["password"], "password")
         password = data["password"]
         with db():
@@ -579,8 +585,14 @@ def browse(kind, filters=None):
 
 browse_params = {
     "q": "Literal case-insensitive substring search over record fields",
-    "page": "Positive page number (default 1)",
-    "per_page": "Page size 1–100 (default 20)",
+    "page": {"description": "Page number", "type": "integer", "minimum": 1, "default": 1},
+    "per_page": {
+        "description": "Page size",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 20,
+    },
 }
 
 
@@ -598,13 +610,18 @@ def register_dataset(kind):
     if kind == "routes":
         params.update(
             {
-                k: "Optional exact numeric ID filter"
+                k: {
+                    "description": "Optional exact numeric ID filter",
+                    "type": "integer",
+                    "minimum": 1,
+                }
                 for k in ("airline_id", "origin_airport_id", "destination_airport_id")
             }
         )
 
     class Collection(Resource):
         @api.doc(
+            id=f"list_{kind}",
             description=f"All active accounts. Browse {kind} with stable ID ordering.",
             params=params,
         )
@@ -617,7 +634,8 @@ def register_dataset(kind):
 
     class Detail(Resource):
         @api.doc(
-            description=f"All active accounts. Retrieve {kind} details and relationship links."
+            id=f"get_{kind}",
+            description=f"All active accounts. Retrieve {kind} details and relationship links.",
         )
         @api.response(200, "Record", route_details if kind == "routes" else models[kind])
         @responses
@@ -633,6 +651,7 @@ def register_dataset(kind):
 
         class RelatedRoutes(Resource):
             @api.doc(
+                id=f"list_{kind}_routes",
                 description=(
                     "All active accounts. Airport relationship returns departing routes; "
                     "airline relationship returns operated routes."
@@ -955,6 +974,19 @@ class Export(Resource):
             )
         axes.set_yticks(range(len(rows)), [r["name"] for r in rows])
         axes.invert_yaxis()
+        # Bound the axis and its ticks explicitly: automatic expansion of a
+        # same-day trip near year 9999 can otherwise generate year-10000 ticks.
+        first = min(mdates.date2num(date.fromisoformat(row["departure_date"])) for row in rows)
+        last = max(mdates.date2num(date.fromisoformat(row["return_date"])) for row in rows)
+        padding = max(1, math.ceil((last - first) * 0.05))
+        lower = max(mdates.date2num(date.min), first - padding)
+        upper = min(mdates.date2num(date.max), last + padding)
+        tick_count = min(6, int(upper - lower) + 1)
+        ticks = sorted(
+            {round(lower + (upper - lower) * i / (tick_count - 1)) for i in range(tick_count)}
+        )
+        axes.set_xlim(lower, upper)
+        axes.set_xticks(ticks)
         axes.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
         axes.set_title("Your next travel plans")
         axes.set_xlabel("Travel dates")

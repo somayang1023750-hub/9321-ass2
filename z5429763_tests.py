@@ -1,10 +1,3 @@
-"""REST-client tests: start the API first, then pytest z1234567_tests.py.
-
-Each test declares its requirement set and purpose. Fixtures create isolated
-accounts, restore the supplied aviation data and clean up via public HTTP APIs.
-No application imports, direct database access or test-order assumptions.
-"""
-
 import csv
 import io
 import uuid
@@ -110,12 +103,20 @@ def test_swagger():
         "/plans/export",
     ]:
         assert path in spec["paths"]
+    operation_ids = []
     for path, operations in spec["paths"].items():
         for method, operation in operations.items():
             if method in ("get", "post", "patch", "put", "delete"):
                 assert operation.get("summary"), (path, method)
                 assert operation.get("description"), (path, method)
                 assert "401" in operation["responses"]
+                operation_ids.append(operation["operationId"])
+    assert len(operation_ids) == len(set(operation_ids)), "Swagger operation IDs must be unique"
+    for path in ("/airports", "/airlines", "/routes"):
+        parameters = {p["name"]: p for p in spec["paths"][path]["get"]["parameters"]}
+        assert parameters["page"]["type"] == "integer"
+        assert parameters["per_page"]["type"] == "integer"
+        assert parameters["per_page"]["maximum"] == 100
 
 
 @pytest.mark.parametrize("auth", [None, ("admin", "wrong"), ("missing", "wrong")])
@@ -530,3 +531,79 @@ def test_large_identifiers(actors):
     assert_error(call("PATCH", f'/plans/{plan["id"]}', auth=auth, json={"route_ids": [huge]}), 400)
     broken = csv_text("airports", lambda rows: rows[0].update(airport_id=str(huge)))
     assert_error(upload(("airports",), {"airports": broken}), 400)
+
+
+@pytest.mark.parametrize("suffix", [":suffix", "\n", "\r", "\t", "\x00", "\x7f"])
+def test_basic_username_rules(actors, suffix):
+    """RS1: Reject usernames incompatible with HTTP Basic before creating an account."""
+    username = actors[0][1][0] + suffix
+    response = call("POST", "/accounts", json={"username": username, "password": "pass"})
+    try:
+        assert_error(response, 400, "username")
+        assert "colons or control characters" in response.json()["message"]
+        accounts = call("GET", "/accounts").json()["items"]
+        assert all(account["username"] != username for account in accounts)
+    finally:
+        if response.status_code == 201:
+            call("DELETE", f'/accounts/{response.json()["id"]}')
+
+
+@pytest.mark.parametrize(
+    "endpoint,field,value",
+    [
+        ("/accounts", "username", "\ud800"),
+        ("/accounts", "password", "\udfff"),
+        ("/plans", "name", "\ud800"),
+        ("/plans", "name", "prefix\udfff"),
+    ],
+)
+def test_invalid_unicode_input(actors, endpoint, field, value):
+    """RS1/4: Invalid Unicode returns JSON 400 with no partial account or plan."""
+    auth = actors[0][1]
+    if endpoint == "/accounts":
+        data = {"username": "unicode_" + uuid.uuid4().hex, "password": "pass"}
+        before = call("GET", endpoint).json()
+        caller = ADMIN
+    else:
+        data = {
+            "name": "Trip",
+            "departure_date": "2030-01-01",
+            "return_date": "2030-01-02",
+            "route_ids": [1],
+        }
+        before = call("GET", endpoint, auth=auth).json()
+        caller = auth
+    data[field] = value
+    response = call("POST", endpoint, auth=caller, json=data)
+    assert_error(response, 400, "valid Unicode")
+    assert call("GET", endpoint, auth=caller).json() == before
+
+
+def test_valid_unicode_plan_name(actors):
+    """RS4/5: Unicode validation preserves ordinary non-ASCII names and JSON exports."""
+    auth = actors[0][1]
+    name = "悉尼旅行 ✈ café"
+    plan = new_plan(auth, name=name, route_ids=[])
+    assert call("GET", f'/plans/{plan["id"]}', auth=auth).json()["name"] == name
+    assert call("GET", "/plans/export", auth=auth).json()["items"][0]["name"] == name
+
+
+@pytest.mark.parametrize("period", ["max_same_day", "ordinary_same_day", "wide_range"])
+def test_png_date_boundaries(actors, period):
+    """RS5: Every accepted boundary period renders without out-of-range date ticks."""
+    auth = actors[0][1]
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    start, end = {
+        "max_same_day": ("9999-12-31", "9999-12-31"),
+        "ordinary_same_day": (tomorrow, tomorrow),
+        "wide_range": (tomorrow, "9999-12-31"),
+    }[period]
+    new_plan(auth, departure_date=start, return_date=end, route_ids=[])
+    response = call("GET", "/plans/export?format=png", auth=auth)
+    assert response.status_code == 200, response.text
+    assert response.headers["Content-Type"].startswith("image/png")
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(response.content))
+    image.verify()
+    assert image.format == "PNG" and image.width > 100 and image.height > 100

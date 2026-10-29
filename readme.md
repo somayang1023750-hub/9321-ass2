@@ -67,10 +67,9 @@ pytest z[your_zid]_tests.py
 ```
 ## Implemented files and quick start
 
-The implementation is `z1234567_api.py` and the REST-client suite is
-`z1234567_tests.py`. Replace `z1234567` in both filenames with your actual student
-ID before submission. No API implementation is stored in the specification
-notebook.
+The implementation is `z5429763_api.py` and the REST-client suite is
+`z5429763_tests.py`. Both filenames use student ID `z5429763`. No API
+implementation is stored in the specification notebook.
 
 Use **Python 3.13** from this directory:
 
@@ -78,7 +77,7 @@ Use **Python 3.13** from this directory:
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-python z1234567_api.py
+python z5429763_api.py
 ```
 
 In the prepared cloud environment, use
@@ -89,7 +88,7 @@ contains these settings).
 
 SQLite creates `aviation.db` relative to the working directory and reuses it on
 restart. `AVIATION_DB` optionally selects another **relative** filename, such as
-`AVIATION_DB=test.db python z1234567_api.py`. Absolute paths, parent traversal and
+`AVIATION_DB=test.db python z5429763_api.py`. Absolute paths, parent traversal and
 in-memory databases are rejected. The default accounts are seeded once, so a
 deleted default User stays deleted on restart. Passwords and password hashes are
 never returned. Do not submit database files.
@@ -119,6 +118,9 @@ Default assignment passwords should not be used for a real deployment.
 | `/plans/{id}/routes/{route_id}` | PUT add; DELETE remove | Owner |
 | `/plans/export?format=json` | GET all own plans as JSON attachment | Owner |
 | `/plans/export?format=png` | GET timeline of next five future plans | Owner |
+
+Usernames cannot contain colons or control characters because HTTP Basic uses
+a colon as its credential separator. Text fields must be valid Unicode.
 
 A User can never create another Admin. The dedicated Admin cannot be deleted or
 deactivated. Attempts to access another account's plans return 404 even for the
@@ -192,13 +194,13 @@ JSON 404. Image output is `image/png` for inline display; JSON is an attachment.
 Start the API in a separate terminal with a new, dedicated database filename:
 
 ```bash
-AVIATION_DB=assignment_test.db python z1234567_api.py
+AVIATION_DB=assignment_test.db python z5429763_api.py
 ```
 
 Then, from this directory with the same Python environment:
 
 ```bash
-python -m pytest -q z1234567_tests.py
+python -m pytest -q z5429763_tests.py
 ```
 
 Choose an unused database filename rather than deleting a database with useful
@@ -206,7 +208,9 @@ data. The tests use real `requests` HTTP calls against port 5000, create unique
 temporary Users, clean up through the API, and restore the original CSV data.
 They cover all six requirement sets, including malformed imports, combined
 reference validation, rollback, account deactivation, Admin restrictions, plan
-privacy, date validation and both export formats. **Use a dedicated test database**:
+privacy, date validation and both export formats. Regression tests also cover
+unique Swagger operation IDs, Basic username restrictions, Unicode validation
+and PNG rendering at the supported date boundaries. **Use a dedicated test database**:
 imports intentionally replace aviation datasets. Tests do not rely on execution
 order, direct database access, or importing application internals. Each test's
 docstring identifies its requirement and purpose.
